@@ -89,16 +89,15 @@ async fn handle_github(req: Request<Body>) -> HyperResult<Response<Body>> {
     // Serve a file by asynchronously reading it by chunks using tokio-util crate.
     let whole_body = hyper::body::aggregate(req).await?;
     // Decode as JSON...
-    let data: Result<Value, serde_json::Error> = serde_json::from_reader(whole_body.reader());
+    let data: Result<Value, serde_urlencoded::de::Error> =
+        serde_urlencoded::from_reader(whole_body.reader());
     // let data: Result<Value, serde_json::Error> = serde_json::from_str(body.as_str());
-    println!("{:#?}", data);
     if let Ok(json) = data {
-        let name = json["repository"]["full_name"].as_str().unwrap();
-        println!("{}", name);
+        let fuck_github: Value = serde_json::from_str(json["payload"].as_str().unwrap()).unwrap();
+        let name = fuck_github["repository"]["full_name"].as_str().unwrap();
+
         for project in &get_config().project {
-            println!("{:#?}", project);
             if project.repo.to_lowercase() == name.to_lowercase() {
-                println!("HIT {:#?}", project);
                 let command = project.command.split(' ').collect::<Vec<&str>>();
                 let mut iter = command.iter();
                 let command_name = iter.next().unwrap();

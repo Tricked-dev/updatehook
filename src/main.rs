@@ -7,7 +7,7 @@ use hyper::{
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{env, fs, process::Command};
+use std::{env, fs, io::Read, process::Command};
 
 static NOTFOUND: &[u8] = b"Not Found";
 lazy_static::lazy_static! {
@@ -68,16 +68,14 @@ async fn main() {
 }
 
 async fn handle_req(req: Request<Body>) -> HyperResult<Response<Body>> {
-    let paths = get_config().path.as_deref().unwrap_or(&"/");
+    let paths = get_config().path.as_deref().unwrap_or("/");
 
-    println!("REQUEST {}", req.uri().path());
     match (req.method(), req.uri().path()) {
         (&Method::POST, path) if path == paths => handle_github(req).await,
         _ => Ok(not_found()),
     }
 }
 fn not_found() -> Response<Body> {
-    println!("NOT FOUND!");
     Response::builder()
         // .status(StatusCode::NOT_FOUND)
         .body(NOTFOUND.into())
@@ -85,42 +83,41 @@ fn not_found() -> Response<Body> {
 }
 
 async fn handle_github(req: Request<Body>) -> HyperResult<Response<Body>> {
-    println!("HANDING GITHUB REQUEST");
-    // Serve a file by asynchronously reading it by chunks using tokio-util crate.
     let whole_body = hyper::body::aggregate(req).await?;
-    // Decode as JSON...
-    let data: Result<Value, serde_urlencoded::de::Error> =
-        serde_urlencoded::from_reader(whole_body.reader());
-    // let data: Result<Value, serde_json::Error> = serde_json::from_str(body.as_str());
-    if let Ok(json) = data {
-        let fuck_github: Value = serde_json::from_str(json["payload"].as_str().unwrap()).unwrap();
-        let name = fuck_github["repository"]["full_name"].as_str().unwrap();
 
-        for project in &get_config().project {
-            if project.repo.to_lowercase() == name.to_lowercase() {
-                let command = project.command.split(' ').collect::<Vec<&str>>();
-                let mut iter = command.iter();
-                let command_name = iter.next().unwrap();
-                let args: Vec<&&str> = iter.collect();
-                let result = Command::new(command_name).args(args).output();
-                if let Ok(result) = result {
-                    let file_name = format!(
-                        "{}-{}",
-                        project.repo.replace("/", "_"),
-                        chrono::offset::Local::now()
-                    );
-                    fs::write(
-                        format!("{}/logs/{}-stderr", get_config_dir(), file_name),
-                        result.stderr,
-                    )
-                    .unwrap();
-                    fs::write(
-                        format!("{}/logs/{}-stdout", get_config_dir(), file_name),
-                        result.stdout,
-                    )
-                    .unwrap();
-                }
-                println!("Same repo")
+    let mut buf = vec![];
+    whole_body.reader().read_to_end(&mut buf).unwrap();
+
+    let data: Value = serde_urlencoded::from_bytes(&buf).unwrap();
+
+    let json: Value = if let Some(value) = data["payload"].as_str() {
+        serde_json::from_str(value).unwrap()
+    } else {
+        serde_json::from_slice(&buf).unwrap()
+    };
+    //2021-11-22T16:58:39.090926Z
+    let name = json["repository"]["full_name"].as_str().unwrap();
+
+    for project in &get_config().project {
+        if project.repo.to_lowercase() == name.to_lowercase() {
+            let command = project.command.split(' ').collect::<Vec<&str>>();
+            let mut iter = command.iter();
+            let command_name = iter.next().unwrap();
+            let args: Vec<&&str> = iter.collect();
+            let result = Command::new(command_name).args(args).output();
+            if let Ok(result) = result {
+                let time = chrono::offset::Local::now().to_rfc3339();
+                let file_name = format!("{}-{:?}", project.repo.replace("/", "_"), time);
+                fs::write(
+                    format!("{}/logs/{}-stderr", get_config_dir(), file_name),
+                    result.stderr,
+                )
+                .unwrap();
+                fs::write(
+                    format!("{}/logs/{}-stdout", get_config_dir(), file_name),
+                    result.stdout,
+                )
+                .unwrap();
             }
         }
     }
